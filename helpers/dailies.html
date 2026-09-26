@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dailies · video review</title>
+<style>
+  :root{
+    --bg:#121216; --panel:#1a1a20; --panel2:#22222a; --fg:#ebebeb;
+    --dim:#6e6e78; --accent:#ff8c3c; --line:#2c2c36; --good:#7ac77a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .wrap{display:grid;grid-template-columns:1fr 340px;gap:14px;height:100vh;padding:14px}
+  .left{min-width:0;display:flex;flex-direction:column;gap:10px}
+  h1{font-size:14px;margin:0;color:var(--dim);font-weight:600}
+  h1 b{color:var(--accent)}
+  .stage{position:relative;background:#000;border-radius:8px;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;min-height:0;flex:1}
+  video{max-width:100%;max-height:100%;display:block}
+  #canvas{position:absolute;top:0;left:0;cursor:crosshair;touch-action:none}
+  .timeline{display:flex;align-items:center;gap:10px;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 12px}
+  .track{position:relative;flex:1;height:24px;cursor:pointer;touch-action:none}
+  .track .rail{position:absolute;top:10px;left:0;right:0;height:4px;border-radius:2px;
+    background:var(--panel2)}
+  .track .fill{position:absolute;top:10px;left:0;width:0;height:4px;border-radius:2px;
+    background:var(--accent)}
+  .track .marks{position:absolute;inset:0;pointer-events:none}
+  .track .mk{position:absolute;top:1px;width:2px;height:8px;margin-left:-1px;
+    border-radius:1px;background:var(--good)}
+  .track .head{position:absolute;top:4px;width:3px;height:16px;margin-left:-1px;
+    border-radius:2px;background:var(--fg)}
+  .dur{color:var(--dim);font-variant-numeric:tabular-nums;font-size:12px;
+    min-width:52px;text-align:right}
+  .bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .bar .tc{font-variant-numeric:tabular-nums;font-weight:700;color:var(--accent);
+    min-width:92px;font-size:15px}
+  button{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+    border-radius:6px;padding:6px 10px;cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--dim)}
+  button.on{background:var(--accent);color:#151515;border-color:var(--accent);font-weight:600}
+  .sep{width:1px;height:22px;background:var(--line);margin:0 2px}
+  .swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+  .swatch.on{border-color:#fff}
+  .composer{display:flex;gap:8px;align-items:flex-end}
+  textarea{flex:1;resize:none;height:52px;background:var(--panel);color:var(--fg);
+    border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:14px/1.4 inherit}
+  textarea:focus{outline:none;border-color:var(--accent)}
+  .send{align-self:stretch;padding:0 16px;font-weight:600}
+  .hint{color:var(--dim);font-size:12px}
+  .right{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    display:flex;flex-direction:column;min-height:0}
+  .right h2{margin:0;padding:12px 14px;font-size:13px;color:var(--dim);
+    border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+  .notes{overflow:auto;padding:8px;display:flex;flex-direction:column;gap:8px}
+  .note{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    padding:8px;cursor:pointer}
+  .note:hover{border-color:var(--dim)}
+  .note .t{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
+  .note .c{margin-top:3px;white-space:pre-wrap;word-break:break-word}
+  .note img{width:100%;border-radius:5px;margin-top:6px;display:block}
+  .empty{color:var(--dim);padding:20px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <h1><b>Dailies</b> &nbsp;<span id="vname"></span> &nbsp;·&nbsp; round <span id="vround"></span> &nbsp;·&nbsp; <span id="vfps"></span> fps</h1>
+    <div class="stage">
+      <video id="v" src="/video" preload="auto"></video>
+      <canvas id="canvas"></canvas>
+    </div>
+    <div class="timeline">
+      <div class="track" id="track">
+        <div class="rail"></div>
+        <div class="fill" id="fill"></div>
+        <div class="marks" id="marks"></div>
+        <div class="head" id="head"></div>
+      </div>
+      <span class="dur" id="dur">0:00</span>
+    </div>
+    <div class="bar">
+      <span class="tc" id="tc">0:00.000</span>
+      <button id="play" title="Space">▶︎ / ❚❚</button>
+      <button data-sec="-5">◀◀ 5s</button>
+      <button data-sec="-1" title="Shift+←">◀ 1s</button>
+      <button data-step="-10">◀ 10f</button>
+      <button data-step="-1" title="←">◀ 1f</button>
+      <button data-step="1" title="→">1f ▶</button>
+      <button data-step="10">10f ▶</button>
+      <button data-sec="1" title="Shift+→">1s ▶</button>
+      <button data-sec="5">5s ▶▶</button>
+      <span class="sep"></span>
+      <button class="tool on" data-tool="pen">✎ pen</button>
+      <button class="tool" data-tool="arrow">↗ arrow</button>
+      <button class="tool" data-tool="box">▭ box</button>
+      <span class="sep"></span>
+      <button class="swatch on" data-color="#ff3b30" style="background:#ff3b30"></button>
+      <button class="swatch" data-color="#ffd60a" style="background:#ffd60a"></button>
+      <button class="swatch" data-color="#30d158" style="background:#30d158"></button>
+      <button class="swatch" data-color="#0a84ff" style="background:#0a84ff"></button>
+      <span class="sep"></span>
+      <button id="undo" title="undo last stroke">⤺ undo</button>
+      <button id="clear">✕ clear</button>
+    </div>
+    <div class="composer">
+      <textarea id="comment" placeholder="Type a note for this moment…  (Enter = save · Shift+Enter = newline)"></textarea>
+      <button class="send" id="send">Save ⏎</button>
+    </div>
+    <div class="hint">Space play/pause · ←/→ one frame · Shift+←/→ ±1s · drag the timeline to scrub (green ticks = saved notes) · draw on the frame, then Enter to save the note + annotated image.</div>
+  </div>
+  <div class="right">
+    <h2><span>Notes</span><span id="count">0</span></h2>
+    <div class="notes" id="notes"><div class="empty">No notes yet.</div></div>
+  </div>
+</div>
+<script>
+const CONFIG = /*__CONFIG__*/null;
+const v = document.getElementById('v');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const tcEl = document.getElementById('tc');
+const commentEl = document.getElementById('comment');
+const notesEl = document.getElementById('notes');
+const countEl = document.getElementById('count');
+
+let fps = (CONFIG && CONFIG.fps) || 24;
+let tool = 'pen';
+let color = '#ff3b30';
+let strokes = [];         // committed strokes for the pending note
+let drawing = null;       // in-progress stroke
+document.getElementById('vname').textContent = CONFIG ? CONFIG.video : '';
+document.getElementById('vround').textContent = CONFIG ? String(CONFIG.round).padStart(2,'0') : '';
+document.getElementById('vfps').textContent = (+fps).toFixed(2).replace(/\.?0+$/,'');
+
+// ---- timecode ----
+function tc(t){const m=Math.floor(t/60),s=t-60*m;return m+':'+s.toFixed(3).padStart(6,'0');}
+function tcShort(t){const m=Math.floor(t/60),s=Math.floor(t-60*m);return m+':'+String(s).padStart(2,'0');}
+function updTC(){
+  tcEl.textContent = tc(v.currentTime||0);
+  const d = v.duration||0;
+  const f = d ? Math.max(0,Math.min(1,(v.currentTime||0)/d)) : 0;
+  fillEl.style.width = (f*100)+'%';
+  headEl.style.left  = (f*100)+'%';
+}
+v.addEventListener('timeupdate',updTC);
+v.addEventListener('seeked',updTC);
+v.addEventListener('loadedmetadata',()=>{durEl.textContent = tcShort(v.duration||0); drawMarks();});
+
+// ---- timeline scrub ----
+const trackEl=document.getElementById('track'), fillEl=document.getElementById('fill');
+const headEl=document.getElementById('head'), marksEl=document.getElementById('marks');
+const durEl=document.getElementById('dur');
+let scrubbing=false, wasPlaying=false;
+function seekFromEvent(e){
+  const r=trackEl.getBoundingClientRect();
+  const f=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+  v.currentTime = f*(v.duration||0);
+  updTC();
+}
+trackEl.addEventListener('pointerdown',e=>{
+  scrubbing=true; wasPlaying=!v.paused; v.pause();
+  trackEl.setPointerCapture(e.pointerId); seekFromEvent(e);
+});
+trackEl.addEventListener('pointermove',e=>{ if(scrubbing) seekFromEvent(e); });
+function endScrub(){ if(scrubbing){ scrubbing=false; if(wasPlaying) v.play(); } }
+trackEl.addEventListener('pointerup',endScrub);
+trackEl.addEventListener('pointercancel',endScrub);
+
+// note ticks on the timeline
+let noteTimes=[];
+function drawMarks(){
+  const d=v.duration||0; if(!d) return;
+  marksEl.innerHTML='';
+  noteTimes.forEach(t=>{
+    const el=document.createElement('div'); el.className='mk';
+    el.style.left=(Math.max(0,Math.min(1,t/d))*100)+'%';
+    marksEl.appendChild(el);
+  });
+}
+
+// ---- canvas sizing locked to the video's displayed box ----
+function sizeCanvas(){
+  const r = v.getBoundingClientRect();
+  const stage = v.parentElement.getBoundingClientRect();
+  canvas.width = Math.round(r.width);
+  canvas.height = Math.round(r.height);
+  canvas.style.width = r.width+'px';
+  canvas.style.height = r.height+'px';
+  canvas.style.left = Math.round(r.left-stage.left)+'px';
+  canvas.style.top = Math.round(r.top-stage.top)+'px';
+  redraw();
+}
+v.addEventListener('loadedmetadata',()=>{sizeCanvas();updTC();});
+window.addEventListener('resize',sizeCanvas);
+new ResizeObserver(sizeCanvas).observe(v.parentElement);
+
+// ---- drawing ----
+function pos(e){
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX-r.left)/r.width, (e.clientY-r.top)/r.height]; // normalized 0..1
+}
+canvas.addEventListener('pointerdown',e=>{
+  canvas.setPointerCapture(e.pointerId);
+  drawing = {tool, color, points:[pos(e)]};
+});
+canvas.addEventListener('pointermove',e=>{
+  if(!drawing) return;
+  const p = pos(e);
+  if(drawing.tool==='pen') drawing.points.push(p);
+  else drawing.points[1] = p;      // arrow/box: [start,end]
+  redraw();
+});
+function endStroke(){ if(drawing){ if(drawing.points.length>1||drawing.tool==='pen'){strokes.push(drawing);} drawing=null; redraw(); } }
+canvas.addEventListener('pointerup',endStroke);
+canvas.addEventListener('pointercancel',endStroke);
+
+function drawStroke(c,s,W,H){
+  c.strokeStyle=s.color; c.fillStyle=s.color;
+  c.lineWidth=Math.max(2,Math.round(W*0.004)); c.lineCap='round'; c.lineJoin='round';
+  const pts=s.points.map(p=>[p[0]*W,p[1]*H]);
+  if(s.tool==='pen'){
+    c.beginPath(); pts.forEach((p,i)=>i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1])); c.stroke();
+  } else if(s.tool==='box'){
+    if(pts.length<2)return; const[a,b]=pts;
+    c.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);
+  } else if(s.tool==='arrow'){
+    if(pts.length<2)return; const[a,b]=pts;
+    c.beginPath(); c.moveTo(a[0],a[1]); c.lineTo(b[0],b[1]); c.stroke();
+    const ang=Math.atan2(b[1]-a[1],b[0]-a[0]); const h=Math.max(10,W*0.018);
+    c.beginPath(); c.moveTo(b[0],b[1]);
+    c.lineTo(b[0]-h*Math.cos(ang-0.4),b[1]-h*Math.sin(ang-0.4));
+    c.lineTo(b[0]-h*Math.cos(ang+0.4),b[1]-h*Math.sin(ang+0.4));
+    c.closePath(); c.fill();
+  }
+}
+function redraw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const all = drawing?strokes.concat([drawing]):strokes;
+  all.forEach(s=>drawStroke(ctx,s,canvas.width,canvas.height));
+}
+
+// ---- flatten frame + strokes to a PNG (intrinsic resolution) ----
+function flatten(){
+  if(!strokes.length) return null;
+  const W=v.videoWidth||canvas.width, H=v.videoHeight||canvas.height;
+  const off=document.createElement('canvas'); off.width=W; off.height=H;
+  const c=off.getContext('2d');
+  try{ c.drawImage(v,0,0,W,H); }catch(_){}
+  strokes.forEach(s=>drawStroke(c,s,W,H));
+  return off.toDataURL('image/png');
+}
+
+// ---- tools / colors ----
+document.querySelectorAll('.tool').forEach(b=>b.onclick=()=>{
+  tool=b.dataset.tool;
+  document.querySelectorAll('.tool').forEach(x=>x.classList.toggle('on',x===b));
+});
+document.querySelectorAll('.swatch').forEach(b=>b.onclick=()=>{
+  color=b.dataset.color;
+  document.querySelectorAll('.swatch').forEach(x=>x.classList.toggle('on',x===b));
+});
+document.getElementById('undo').onclick=()=>{strokes.pop();redraw();};
+document.getElementById('clear').onclick=()=>{strokes=[];drawing=null;redraw();};
+
+// ---- transport ----
+function togglePlay(){ v.paused?v.play():v.pause(); }
+document.getElementById('play').onclick=togglePlay;
+function nudge(sec){ v.pause(); v.currentTime=Math.max(0,Math.min(v.duration||1e9,v.currentTime+sec)); }
+function step(frames){ nudge(frames/fps); }
+document.querySelectorAll('[data-step]').forEach(b=>b.onclick=()=>step(+b.dataset.step));
+document.querySelectorAll('[data-sec]').forEach(b=>b.onclick=()=>nudge(+b.dataset.sec));
+
+// ---- save note ----
+async function save(){
+  const comment=commentEl.value.trim();
+  if(!comment && !strokes.length){ commentEl.focus(); return; }
+  const payload={
+    t: v.currentTime||0,
+    comment,
+    tool: strokes.length?strokes[strokes.length-1].tool:'',
+    strokes,
+    frame_png: flatten(),
+  };
+  const res=await fetch('/note',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)});
+  const data=await res.json();
+  if(data.ok){ addNoteCard(data.note); commentEl.value=''; strokes=[]; drawing=null; redraw(); commentEl.blur(); }
+}
+document.getElementById('send').onclick=save;
+
+function addNoteCard(n){
+  const empty=notesEl.querySelector('.empty'); if(empty) empty.remove();
+  const el=document.createElement('div'); el.className='note';
+  el.onclick=()=>{ v.pause(); v.currentTime=n.t; };
+  el.innerHTML=`<div class="t">#${n.i} · ${n.tc}</div>`+
+    (n.comment?`<div class="c"></div>`:'')+
+    (n.frame?`<img src="/${n.frame}?_=${Date.now()}">`:'');
+  if(n.comment) el.querySelector('.c').textContent=n.comment;
+  notesEl.appendChild(el);
+  countEl.textContent = notesEl.querySelectorAll('.note').length;
+  notesEl.scrollTop = notesEl.scrollHeight;
+  noteTimes.push(n.t); drawMarks();
+}
+if(CONFIG && CONFIG.existing) CONFIG.existing.forEach(addNoteCard);
+
+// ---- keyboard ----
+window.addEventListener('keydown',e=>{
+  const typing = document.activeElement===commentEl;
+  if(typing){
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); save(); }
+    return; // let all other keys type normally
+  }
+  if(e.key===' '){ e.preventDefault(); togglePlay(); }
+  else if(e.key==='ArrowLeft'){ e.preventDefault(); step(e.shiftKey?-Math.round(fps):-1); }
+  else if(e.key==='ArrowRight'){ e.preventDefault(); step(e.shiftKey?Math.round(fps):1); }
+  else if(e.key==='Enter'){ e.preventDefault(); commentEl.focus(); }
+  else if(e.key==='Backspace'){ e.preventDefault(); strokes.pop(); redraw(); }
+});
+</script>
+</body>
+</html>

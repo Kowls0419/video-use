@@ -4,6 +4,19 @@
 
 # video-use
 
+> **This is Kyle Yang's fork of [browser-use/video-use](https://github.com/browser-use/video-use).**
+> Differences from upstream:
+> - **Dailies** (`helpers/dailies_server.py` + `dailies.html`, also at
+>   [Kowls0419/dailies](https://github.com/Kowls0419/dailies)) — a browser review app for
+>   timestamped comments and on-frame drawings, wired into `SKILL.md` as process step 8.
+> - **Optional `reflect` loop** — `SKILL.md` recalls a cross-project lessons ledger before
+>   rendering *if* a `reflect` skill is installed; without it, that step is skipped.
+> - **`render.py`** — `--crf` / `--preset` overrides for the per-segment encode, and a
+>   per-range `"grade"` key in the EDL that overrides the EDL-wide grade (`""` opts a range out).
+>
+> EDLs that use per-range `"grade"` render differently on upstream `render.py`, so
+> collaborators on the same project should all run this fork.
+
 Introducing **video-use** — edit videos with Claude Code. 100% open source.
 
 Drop raw footage in a folder, chat with Claude Code, get `final.mp4` back. Works for any content — talking heads, montages, tutorials, travel, interviews — without presets or menus.
@@ -25,7 +38,7 @@ Try video-use in [Browser Use Cloud](https://cloud.browser-use.com/v4?utm_campai
 Paste into Claude Code, Codex, Hermes, Openclaw, or any agent with shell access:
 
 ```text
-Set up https://github.com/browser-use/video-use for me.
+Set up https://github.com/Kowls0419/video-use for me.
 
 Read install.md first to install this repo, wire up ffmpeg, register the skill with whichever agent you're running under, and set up the ElevenLabs API key — ask me to paste it when you need it. Then read SKILL.md for daily usage, and always read helpers/ because that's where the editing scripts live. After install, don't transcribe anything on your own — just tell me it's ready and wait for me to drop footage into a folder.
 ```
@@ -53,7 +66,7 @@ If you'd rather do it by hand:
 
 ```bash
 # 1. Clone and symlink into your agent's skills directory
-git clone https://github.com/browser-use/video-use ~/Developer/video-use
+git clone https://github.com/Kowls0419/video-use ~/Developer/video-use
 ln -sfn ~/Developer/video-use ~/.claude/skills/video-use        # Claude Code
 # ln -sfn ~/Developer/video-use ~/.codex/skills/video-use       # Codex
 

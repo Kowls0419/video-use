@@ -31,12 +31,13 @@ These are the things where deviation produces silent failures or broken output. 
 10. **Parallel sub-agents for multiple animations.** Never sequential. Spawn N at once via the `Agent` tool; total wall time ≈ slowest one.
 11. **Strategy confirmation before execution.** Never touch the cut until the user has approved the plain-English plan.
 12. **All session outputs in `<videos_dir>/edit/`.** Never write inside the `video-use/` project directory.
+13. **Run the `reflect` loop around every render — if the `reflect` skill is installed** (`~/.claude/skills/reflect/` exists; it is optional, and when it is absent this rule is skipped — the project's own `project.md` still carries its project-specific rules). BEFORE rendering, recall the applicable lessons from the `reflect` skill (`~/.claude/skills/reflect/lessons/video.md` + `universal.md`, entries whose Scope matches — `video` + the sub-tags this material triggers) and self-check the build against them; never ship a build that repeats a logged mistake. AFTER every Dailies review round, log the correction count and promote any new *recurring* mistake into reflect's ledger. This is how the same fix stops getting re-requested across sessions — see Review & Learning.
 
 Everything else in this document is a worked example. Deviate whenever the material calls for it.
 
 ## Directory layout
 
-The skill lives in `video-use/`. User footage lives wherever they put it. All session outputs go into `<videos_dir>/edit/`.
+The skill lives in `video-use/`. User footage lives wherever they put it. All session outputs go into `<videos_dir>/edit/`. The cross-project learning ledger, when used, lives in the separate optional `reflect` skill, not here (see Review & Learning).
 
 ```
 <videos_dir>/
@@ -51,6 +52,7 @@ The skill lives in `video-use/`. User footage lives wherever they put it. All se
     ├── master.srt               ← output-timeline subtitles
     ├── downloads/               ← yt-dlp outputs
     ├── verify/                  ← debug frames / timeline PNGs
+    ├── review/                  ← review-app output: <stem>_rNN.json + frames/*.png + manual.jsonl
     ├── preview.mp4
     └── final.mp4
 ```
@@ -77,11 +79,14 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
+- **`dailies_server.py <preview.mp4>`** — **Dailies**, the interactive review app. Serves the rendered preview to a local browser where the user scrubs, drops timestamped comments, and draws pen/arrow/box annotations. Writes `edit/review/<stem>_rNN.json` + flattened annotated PNGs you read directly. Use it instead of asking the user to describe problems in prose.
+- **`reflect` skill** (`~/.claude/skills/reflect/`, optional — skip everything reflect-related if it is not installed) — the learning loop: `lessons/` (domain-split scope-tagged ledger; `lessons.md` routes) + `helpers/converge.py report --reviews <edit>/review` (corrections/round convergence, read straight from the Dailies JSONs). video-use delegates all learning here.
 
 For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a sub-agent via the `Agent` tool.
 
 ## The process
 
+0. **Recall (before touching anything that renders).** Always read `project.md` if it exists. If the `reflect` skill is installed, also read its ledger (`~/.claude/skills/reflect/lessons/video.md` + `universal.md`) and select the entries whose **Scope** matches this material (`video` + sub-tags like `zh-subtitle` when burning Chinese subs, `drive-sync` on Google Drive; `universal` always). Keep the applicable lessons as a self-check the build must pass before you show it (Hard Rule 13). This is the "review past mistakes before starting" half of the loop.
 1. **Inventory.** `ffprobe` every source. `transcribe_batch.py` on the directory. `pack_transcripts.py` to produce `takes_packed.md`. Sample one or two `timeline_view`s for a visual first impression.
 2. **Pre-scan for problems.** One pass over `takes_packed.md` to note verbal slips, obvious mis-speaks, or phrasings to avoid. Plain list, feed into the editor brief.
 3. **Converse.** Describe what you see in plain English. Ask questions *shaped by the material*. Collect: content type, target length/aspect, aesthetic/brand direction, pacing feel, must-preserve moments, must-cut moments, animation and grade preferences, subtitle needs. Do not use a fixed checklist — the right questions are different every time.
@@ -96,8 +101,63 @@ For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a su
 
    Also sample: first 2s, last 2s, and 2–3 mid-points — check grade consistency, subtitle readability, overall coherence. Run `ffprobe` on the output to verify duration matches the EDL expectation.
 
-   If anything fails: fix → re-render → re-eval. **Cap at 3 self-eval passes** — if issues remain after 3, flag them to the user rather than looping forever. Only present the preview once the self-eval passes.
-8. **Iterate + persist.** Natural-language feedback, re-plan, re-render. Never re-transcribe. Final render on confirmation. Append to `project.md`.
+   Also self-check against the lessons recalled in step 0 (the ledger's, if reflect is installed, and any rules recorded in `project.md`) — a build that repeats a logged mistake does not pass (Hard Rule 13). If anything fails: fix → re-render → re-eval. **Cap at 3 self-eval passes** — if issues remain after 3, flag them to the user rather than looping forever. Only present the preview once the self-eval passes.
+8. **Dailies review.** For anything beyond a trivial tweak, offer the Dailies app instead of asking the user to describe problems in prose: `python helpers/dailies_server.py <edit>/<name>_preview.mp4`. The user scrubs, comments at timestamps, and draws on frames; it writes `edit/review/<stem>_rNN.json` + annotated PNGs. Ingest them directly — read the JSON, then read each referenced frame PNG (you *see* the circled/arrowed problem) — and apply the fixes.
+9. **Iterate + persist (close the reflect loop).** Re-plan, re-render (never re-transcribe), re-eval. After each Dailies round, if the `reflect` skill is installed: (a) check convergence — `python ~/.claude/skills/reflect/helpers/converge.py report --reviews <edit>/review` reads the round counts straight from the Dailies JSONs; it should trend down; (b) if a mistake was one you *could have prevented* and is likely to recur, promote it to reflect's `lessons.md` (generalized, scope-tagged, `video` + sub-tags); (c) — always, reflect or not — append the session to `project.md`. Final render on confirmation.
+
+## Review & Learning (Dailies + reflect)
+
+Dailies ships with this skill and is always available. The `reflect` half is
+optional: if `~/.claude/skills/reflect/` does not exist, skip it — nothing else in
+the process depends on it.
+
+Two halves of one loop: **Dailies**, a visual review tool that removes the "type a
+long description of where the problem is" friction, and the **`reflect` skill's
+learning ledger** that stops the same mistake from recurring across videos and
+projects.
+
+### Dailies (the review app)
+
+```
+python helpers/dailies_server.py <edit>/<name>_preview.mp4      # opens localhost in the browser
+```
+
+The user gets a player: `Space` play/pause, `←/→` step one frame, `Shift+←/→` ±1s,
+`Enter` to type a timestamped comment, and pen/arrow/box tools to draw on the paused
+frame. Each note is written straight into the project — no copy-paste, no dictation:
+
+- `edit/review/<stem>_rNN.json` — `{video, round, fps, notes:[{i,t,tc,comment,tool,strokes,frame}]}`
+- `edit/review/frames/<stem>_rNN_<idx>_<t>.png` — the frame with the drawing baked in
+
+**Ingest it directly:** `Read` the JSON, then `Read` each referenced `frame` PNG. You
+literally see the circled text / the arrow showing where a subtitle should move —
+far more precise than a prose description, and cheaper than a long back-and-forth.
+The round number auto-increments per video, so `_r01`, `_r02`, … is the correction
+history. This is the interactive successor to `timeline_view.py` (static filmstrip);
+use `timeline_view.py` for your own decision-point drill-downs, `dailies_server.py`
+for the user's feedback.
+
+### Learning — via the `reflect` skill
+
+The closed learning loop lives in the separate **`reflect`** skill
+(`~/.claude/skills/reflect/`) so it applies to every kind of work, not just video.
+video-use plugs into it:
+
+- **Recall** (process step 0, Hard Rule 13): read `reflect/lessons/video.md` + `reflect/lessons/universal.md` (and
+  `writing-school.md` when the output is Chinese), load the
+  entries scoped `video` + the sub-tags this material triggers (`zh-subtitle`,
+  `overlay-transitions`, `drive-sync`, …) plus `universal`, and self-check the build
+  against them before rendering.
+- **Converge:** each Dailies round's note count is the correction count.
+  `python ~/.claude/skills/reflect/helpers/converge.py report --reviews <edit>/review`
+  reads them straight from the JSONs and prints the trend — it should go **down**.
+- **Promote:** when a *new recurring* mistake appears, add a generalized,
+  scope-tagged entry to `reflect/lessons/video.md` — the **rule**, not the instance
+  ("never use `・` in card text (renders as a box)", not "fixed the dot at 1:32").
+
+See the `reflect` skill for the full methodology. The video-specific lessons this
+project has already produced (loudnorm bleed, framed↔card flash, cover→card drift,
+`・`→box, 平→坪, Traditional-only) are seeded there under the `video` scope.
 
 ## Cut craft (techniques)
 
@@ -320,3 +380,6 @@ Things that consistently fail regardless of style:
 - **Editing before confirming the strategy.** Never.
 - **Re-transcribing cached sources.** Immutable outputs of immutable inputs.
 - **Assuming what kind of video it is.** Look first, ask second, edit last.
+- **Re-making a logged mistake because the loop was skipped** (when reflect is installed). `reflect/lessons/video.md` exists so the same fix isn't re-requested every session. Recall it before you render (Hard Rule 13).
+- **Making the user describe a visual problem in prose when Dailies would show it.** For anything non-trivial, `dailies_server.py` → annotated frames beats a paragraph.
+- **Logging the instance instead of the rule.** A lesson is "never use `・` (renders as box)", not "fixed the dot at 1:32." Un-generalized lessons don't converge.

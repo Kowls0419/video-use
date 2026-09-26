@@ -157,6 +157,8 @@ def extract_segment(
     out_path: Path,
     preview: bool = False,
     draft: bool = False,
+    crf: str | None = None,
+    preset: str | None = None,
 ) -> None:
     """Extract a cut range as its own MP4 with grade + 30ms audio fades baked in.
 
@@ -167,6 +169,11 @@ def extract_segment(
       - final (default): 1080p libx264 fast CRF 20
       - preview:         1080p libx264 medium CRF 22 (evaluable for QC)
       - draft:           720p libx264 ultrafast CRF 28 (cut-point check only)
+
+    `crf`/`preset` override the ladder. This encode is the FIRST of two lossy
+    generations (here, then the grade/subtitle burn), so the two compound: when the
+    delivery matters, make this one near-transparent (CRF 12-14) and let only the
+    final pass actually compress.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -189,11 +196,12 @@ def extract_segment(
     af = f"afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out_start:.3f}:d=0.03"
 
     if draft:
-        preset, crf = "ultrafast", "28"
+        d_preset, d_crf = "ultrafast", "28"
     elif preview:
-        preset, crf = "medium", "22"
+        d_preset, d_crf = "medium", "22"
     else:
-        preset, crf = "fast", "20"
+        d_preset, d_crf = "fast", "20"
+    preset, crf = preset or d_preset, crf or d_crf
 
     cmd = [
         "ffmpeg", "-y",
@@ -216,6 +224,8 @@ def extract_all_segments(
     edit_dir: Path,
     preview: bool,
     draft: bool = False,
+    crf: str | None = None,
+    preset: str | None = None,
 ) -> list[Path]:
     """Extract every EDL range into edit_dir/clips_graded/seg_NN.mp4.
     Returns the ordered list of segment paths.
@@ -251,11 +261,22 @@ def extract_all_segments(
         else:
             seg_filter = resolved
 
+        # Per-range override beats the EDL-wide grade. Set "grade": "" on a
+        # range to opt it out entirely — needed for synthetic card sources,
+        # where a temporal filter like tmix has nothing to de-flicker but
+        # smears any animation baked into the card.
+        if "grade" in r:
+            seg_filter = resolve_grade_filter(r["grade"])
+            if seg_filter == "__AUTO__":
+                seg_filter, _stats = auto_grade_for_clip(
+                    src_path, start=start, duration=duration, verbose=False)
+
         note = r.get("beat") or r.get("note") or ""
         print(f"  [{i:02d}] {src_name}  {start:7.2f}-{end:7.2f}  ({duration:5.2f}s)  {note}")
         if is_auto:
             print(f"        grade: {seg_filter or '(none)'}")
-        extract_segment(src_path, start, duration, seg_filter, out_path, preview=preview, draft=draft)
+        extract_segment(src_path, start, duration, seg_filter, out_path,
+                        preview=preview, draft=draft, crf=crf, preset=preset)
         seg_paths.append(out_path)
 
     return seg_paths
@@ -601,6 +622,15 @@ def main() -> None:
         action="store_true",
         help="Skip audio loudness normalization. Default is on (-14 LUFS, -1 dBTP, LRA 11).",
     )
+    ap.add_argument(
+        "--crf",
+        help="Override the quality ladder's CRF for the per-segment encode "
+             "(e.g. 14 for a near-transparent intermediate).",
+    )
+    ap.add_argument(
+        "--preset",
+        help="Override the quality ladder's x264 preset for the per-segment encode.",
+    )
     args = ap.parse_args()
 
     edl_path = args.edl.resolve()
@@ -613,7 +643,8 @@ def main() -> None:
 
     # 1. Extract per-segment (auto-grade per range if EDL grade is "auto")
     segment_paths = extract_all_segments(
-        edl, edit_dir, preview=args.preview, draft=args.draft
+        edl, edit_dir, preview=args.preview, draft=args.draft,
+        crf=args.crf, preset=args.preset,
     )
 
     # 2. Concat → base
