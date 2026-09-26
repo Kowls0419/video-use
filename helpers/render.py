@@ -48,6 +48,8 @@ except Exception:
 # baseline roughly 30% up from the bottom on any aspect — clear of the UI on
 # every major vertical-video platform. Do not drop this below ~75 without a
 # specific reason.
+OUT_FPS = "24"          # --fps overrides (e.g. 30000/1001 for 29.97)
+SUB_FONTS_DIR: str | None = None   # --fonts-dir: libass fontsdir for non-system fonts
 SUB_FORCE_STYLE = (
     "FontName=Helvetica,FontSize=18,Bold=1,"
     "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H00000000,"
@@ -211,7 +213,7 @@ def extract_segment(
         "-vf", vf,
         "-af", af,
         "-c:v", "libx264", "-preset", preset, "-crf", crf,
-        "-pix_fmt", "yuv420p", "-r", "24",
+        "-pix_fmt", "yuv420p", "-r", OUT_FPS,
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
         str(out_path),
@@ -560,7 +562,9 @@ def build_final_composite(
     if has_subs:
         subs_abs = str(subtitles_path.resolve()).replace(":", r"\:").replace("'", r"\'")
         filter_parts.append(
-            f"{current}subtitles='{subs_abs}':force_style='{SUB_FORCE_STYLE}'[outv]"
+            f"{current}subtitles='{subs_abs}'"
+            + (f":fontsdir='{Path(SUB_FONTS_DIR).resolve()}'" if SUB_FONTS_DIR else "")
+            + f":force_style='{SUB_FORCE_STYLE}'[outv]"
         )
         out_label = "[outv]"
     else:
@@ -623,6 +627,19 @@ def main() -> None:
         help="Skip audio loudness normalization. Default is on (-14 LUFS, -1 dBTP, LRA 11).",
     )
     ap.add_argument(
+        "--fps",
+        help="Output frame rate for the per-segment encode (default 24). "
+             "Use 30000/1001 for 29.97 from a 59.94 source.",
+    )
+    ap.add_argument(
+        "--sub-style",
+        help="libass force_style string replacing the default subtitle style.",
+    )
+    ap.add_argument(
+        "--fonts-dir",
+        help="Directory of font files for the subtitle burn (fonts not installed system-wide).",
+    )
+    ap.add_argument(
         "--crf",
         help="Override the quality ladder's CRF for the per-segment encode "
              "(e.g. 14 for a near-transparent intermediate).",
@@ -632,6 +649,13 @@ def main() -> None:
         help="Override the quality ladder's x264 preset for the per-segment encode.",
     )
     args = ap.parse_args()
+    global OUT_FPS, SUB_FORCE_STYLE, SUB_FONTS_DIR
+    if args.fps:
+        OUT_FPS = args.fps
+    if args.sub_style:
+        SUB_FORCE_STYLE = args.sub_style
+    if args.fonts_dir:
+        SUB_FONTS_DIR = args.fonts_dir
 
     edl_path = args.edl.resolve()
     if not edl_path.exists():
