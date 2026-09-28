@@ -102,7 +102,7 @@ For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a su
    Also sample: first 2s, last 2s, and 2–3 mid-points — check grade consistency, subtitle readability, overall coherence. Run `ffprobe` on the output to verify duration matches the EDL expectation.
 
    Also self-check against the lessons recalled in step 0 (the ledger's, if reflect is installed, and any rules recorded in `project.md`) — a build that repeats a logged mistake does not pass (Hard Rule 13). If anything fails: fix → re-render → re-eval. **Cap at 3 self-eval passes** — if issues remain after 3, flag them to the user rather than looping forever. Only present the preview once the self-eval passes.
-8. **Dailies review.** For anything beyond a trivial tweak, offer the Dailies app instead of asking the user to describe problems in prose: `python helpers/dailies_server.py <edit>/<name>_preview.mp4`. The user scrubs, comments at timestamps, and draws on frames; it writes `edit/review/<stem>_rNN.json` + annotated PNGs. Ingest them directly — read the JSON, then read each referenced frame PNG (you *see* the circled/arrowed problem) — and apply the fixes.
+8. **Dailies review.** For anything beyond a trivial tweak, offer the Dailies app instead of asking the user to describe problems in prose: `python helpers/dailies_server.py <edit>/<name>_preview.mp4`. **First write your review flags** (see "Claude's flags" below) for everything the self-eval could not settle by itself. The user scrubs, comments at timestamps, and draws on frames; it writes `edit/review/<stem>_rNN.json` + annotated PNGs. Ingest them directly — read the JSON, then read each referenced frame PNG (you *see* the circled/arrowed problem) — and apply the fixes.
 9. **Iterate + persist (close the reflect loop).** Re-plan, re-render (never re-transcribe), re-eval. After each Dailies round: if the project has a `lessons/` folder, add any new preventable, recurring mistake to the driver's file there (generalized — the rule, not the instance); and if the `reflect` skill is installed: (a) check convergence — `python ~/.claude/skills/reflect/helpers/converge.py report --reviews <edit>/review` reads the round counts straight from the Dailies JSONs; it should trend down; (b) if a mistake was one you *could have prevented* and is likely to recur, promote it to reflect's `lessons.md` (generalized, scope-tagged, `video` + sub-tags); (c) — always, reflect or not — append the session to `project.md`. Final render on confirmation.
 
 ## Review & Learning (Dailies + reflect)
@@ -126,7 +126,7 @@ The user gets a player: `Space` play/pause, `←/→` step one frame, `Shift+←
 `Enter` to type a timestamped comment, and pen/arrow/box tools to draw on the paused
 frame. Each note is written straight into the project — no copy-paste, no dictation:
 
-- `edit/review/<stem>_rNN.json` — `{video, round, fps, notes:[{i,t,tc,comment,tool,strokes,frame}]}`
+- `edit/review/<stem>_rNN.json` — `{video, round, fps, notes:[{i,t,tc,comment,tool,strokes,frame,flag?,edited?}], flags?:[{id,t,end,title,note,region,verdict,note_i?}]}`
 - `edit/review/frames/<stem>_rNN_<idx>_<t>.png` — the frame with the drawing baked in
 
 **Ingest it directly:** `Read` the JSON, then `Read` each referenced `frame` PNG. You
@@ -135,7 +135,36 @@ far more precise than a prose description, and cheaper than a long back-and-fort
 The round number auto-increments per video, so `_r01`, `_r02`, … is the correction
 history. This is the interactive successor to `timeline_view.py` (static filmstrip);
 use `timeline_view.py` for your own decision-point drill-downs, `dailies_server.py`
-for the user's feedback.
+for the user's feedback. Notes can be edited (✎) or deleted (🗑) in place; note ids
+are never reused, and a deleted note's frame PNG goes with it.
+
+**Claude's flags — point the reviewer at what you couldn't settle.** Before
+launching Dailies, write `edit/review/<stem>_flags.json`; it is loaded
+automatically (`--flags PATH` overrides):
+
+```json
+{"flags": [
+  {"t": 126.3, "end": 128.0, "title": "「山段」→「三段」 — changed without hearing it",
+   "note": "ASR wrote 山段; changed from context. Listen and confirm.",
+   "region": [0.2, 0.84, 0.8, 0.97]}
+]}
+```
+
+`t`/`end` are output-timeline seconds of the rendered preview; `end` and `region`
+(a normalized 0..1 box drawn as a dashed guide, never baked into saved frames) are
+optional. Flags show as violet marks on the timeline and a checklist above the
+user's notes; `[`/`]` jump between them, ▶ plays the flagged span with 1.5 s either
+side. The user answers each with **OK** or **Change**: OKs are recorded in the round
+JSON under `flags[].verdict`; a Change is saved as an ordinary note carrying
+`"flag": <id>` (the flag gets `"note_i"`), so `notes` stays the correction count.
+Deleting that note reopens the flag.
+
+Flag *questions*, not things you already verified: a subtitle fix made without
+hearing the audio, a splice placed by waveform, a jump cut kept on purpose, a fact
+from a source with conflicting versions, a deliberate trade-off (e.g. a cover
+extended into a card). Also flag each fix from the previous round so the user can
+confirm it. Keep the list answerable in one pass. When ingesting the round, read
+`flags[].verdict` alongside `notes`; an unanswered flag is still open.
 
 ### Learning — via the `reflect` skill
 

@@ -20,6 +20,18 @@ Output (round NN auto-increments per video unless --round is given):
     <edit>/review/<stem>_rNN.json
     <edit>/review/frames/<stem>_rNN_<idx>_<t>.png
 
+Claude's flags (optional input): after its self-eval, the assistant writes the
+moments it wants a human to check to `<edit>/review/<stem>_flags.json`
+(picked up automatically; `--flags PATH` overrides):
+    {"flags": [{"t": 126.3, "end": 128.0, "title": "山段 → 三段?",
+                "note": "changed without hearing it — listen", "region": [x0,y0,x1,y1]}]}
+`end` and `region` (normalized 0..1 frame box) are optional. They show as violet
+ticks/spans on the timeline and a list above the notes; the reviewer answers each
+with OK or Change. Verdicts are stored in the round JSON under "flags"; a Change
+is saved as a normal note carrying `"flag": <id>` (and the flag records
+`"note_i"`), so `notes` stays the list of
+corrections (the convergence count) and an OK never inflates it.
+
 Stdlib only. Ctrl-C to stop; the JSON is complete after every note (safe to kill).
 """
 from __future__ import annotations
@@ -87,10 +99,40 @@ def timecode(t: float) -> str:
     return f"{int(m)}:{s:06.3f}"
 
 
+def load_flags(path: Path | None) -> list[dict]:
+    """Claude's review flags → a clean, time-sorted list with stable ids."""
+    if not path or not path.exists():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    items = raw.get("flags", raw) if isinstance(raw, dict) else raw
+    flags = []
+    for k, f in enumerate(items, start=1):
+        t = float(f["t"])
+        end = float(f["end"]) if f.get("end") is not None else None
+        region = f.get("region")
+        if region is not None:
+            region = [float(x) for x in region]
+            assert len(region) == 4 and all(0 <= x <= 1 for x in region), \
+                f"flag {k}: region must be 4 normalized numbers"
+        flags.append({
+            "id": int(f.get("id", k)),
+            "t": round(t, 3),
+            "end": round(end, 3) if end is not None and end > t else None,
+            "tc": timecode(t),
+            "title": str(f.get("title", "")).strip(),
+            "note": str(f.get("note", "")).strip(),
+            "region": region,
+        })
+    ids = [f["id"] for f in flags]
+    assert len(ids) == len(set(ids)), f"duplicate flag ids in {path}"
+    return sorted(flags, key=lambda f: f["t"])
+
+
 class ReviewState:
     """Holds paths + the growing note list; serializes on every note."""
 
-    def __init__(self, video: Path, edit_dir: Path, rnd: int, fps: float):
+    def __init__(self, video: Path, edit_dir: Path, rnd: int, fps: float,
+                 flags: list[dict] | None = None):
         self.video = video
         self.fps = fps
         self.round = rnd
@@ -101,25 +143,81 @@ class ReviewState:
         self.json_path = self.review_dir / f"{self.stem}_r{rnd:02d}.json"
         self.lock = threading.Lock()
         self.notes: list[dict] = []
+        self.flags = flags or []
+        self.verdicts: dict[int, dict] = {}   # flag id -> {"verdict", "note_i"?}
+        self.next_i = 0                        # note ids are never reused, even after deletes
         if self.json_path.exists():  # resume a round in progress
             try:
-                self.notes = json.loads(self.json_path.read_text()).get("notes", [])
+                prev = json.loads(self.json_path.read_text())
+                self.notes = prev.get("notes", [])
+                self.next_i = int(prev.get("next_i", 0))
+                for f in prev.get("flags", []):
+                    if f.get("verdict"):
+                        self.verdicts[int(f["id"])] = {
+                            k: f[k] for k in ("verdict", "note_i") if f.get(k) is not None}
             except (json.JSONDecodeError, OSError):
                 self.notes = []
 
     def doc(self) -> dict:
-        return {
+        d = {
             "video": self.video.name,
             "round": self.round,
             "fps": round(self.fps, 4),
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "notes": self.notes,
+            "next_i": self.next_i,
         }
+        if self.flags:
+            d["flags"] = [{**f, **self.verdicts.get(f["id"], {"verdict": None})}
+                          for f in self.flags]
+        return d
+
+    def _write(self) -> None:
+        self.json_path.write_text(json.dumps(self.doc(), ensure_ascii=False, indent=2))
+
+    def set_verdict(self, fid: int, verdict: str | None, note_i: int | None = None) -> dict:
+        assert verdict in ("ok", "change", None), verdict
+        assert any(f["id"] == fid for f in self.flags), f"unknown flag {fid}"
+        with self.lock:
+            if verdict is None:
+                self.verdicts.pop(fid, None)
+            else:
+                self.verdicts[fid] = {"verdict": verdict,
+                                      **({"note_i": note_i} if note_i else {})}
+            self._write()
+            return self.verdicts.get(fid, {"verdict": None})
+
+    def edit_note(self, i: int, comment: str) -> dict:
+        with self.lock:
+            note = next((n for n in self.notes if n["i"] == i), None)
+            assert note is not None, f"no note #{i}"
+            note["comment"] = comment.strip()
+            note["edited"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._write()
+            return note
+
+    def delete_note(self, i: int) -> dict:
+        """Remove a note (and its annotated frame). A flag it answered goes back
+        to unanswered — the reviewer withdrew that Change."""
+        with self.lock:
+            note = next((n for n in self.notes if n["i"] == i), None)
+            assert note is not None, f"no note #{i}"
+            self.notes.remove(note)
+            if note.get("frame"):
+                (self.review_dir / note["frame"]).unlink(missing_ok=True)
+            reopened = None
+            for fid, v in list(self.verdicts.items()):
+                if v.get("note_i") == i:
+                    del self.verdicts[fid]; reopened = fid
+            self._write()
+            return {"i": i, "reopened_flag": reopened}
 
     def add_note(self, t: float, comment: str, tool: str, strokes,
-                 frame_png_b64: str | None) -> dict:
+                 frame_png_b64: str | None, flag: int | None = None) -> dict:
         with self.lock:
-            i = len(self.notes) + 1
+            # stable ids: never reuse a number after a delete (frame files are named by it)
+            i = max([self.next_i] + [n["i"] + 1 for n in self.notes] + [1])
+            self.next_i = i + 1
             frame_rel = None
             if frame_png_b64:
                 header, _, data = frame_png_b64.partition(",")  # strip data: URL prefix
@@ -136,9 +234,11 @@ class ReviewState:
                 "strokes": strokes or [],
                 "frame": frame_rel,
             }
+            if flag is not None:
+                note["flag"] = flag
+                self.verdicts[flag] = {"verdict": "change", "note_i": i}
             self.notes.append(note)
-            self.json_path.write_text(
-                json.dumps(self.doc(), ensure_ascii=False, indent=2))
+            self._write()
             return note
 
 
@@ -170,12 +270,20 @@ def make_handler(state: ReviewState):
                     "fps": state.fps,
                     "round": state.round,
                     "existing": state.notes,
+                    "flags": state.doc().get("flags", []),
                 })
                 html = html.replace("/*__CONFIG__*/null", cfg)
                 self._send(HTTPStatus.OK, html.encode("utf-8"),
                            "text/html; charset=utf-8")
             elif path == "/video":
                 self._serve_video()
+            elif path.startswith("/frames/"):
+                # saved annotation PNGs, so note cards can show their thumbnail
+                p = (state.frames_dir / Path(path).name).resolve()
+                if p.parent == state.frames_dir.resolve() and p.suffix == ".png" and p.exists():
+                    self._send(HTTPStatus.OK, p.read_bytes(), "image/png")
+                else:
+                    self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
             elif path == "/review":
                 body = json.dumps(state.doc(), ensure_ascii=False).encode("utf-8")
                 self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
@@ -184,7 +292,7 @@ def make_handler(state: ReviewState):
 
         def do_POST(self):
             path = urlparse(self.path).path
-            if path != "/note":
+            if path not in ("/note", "/flag", "/note/edit", "/note/delete"):
                 self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
                 return
             length = int(self.headers.get("Content-Length", 0))
@@ -194,14 +302,46 @@ def make_handler(state: ReviewState):
                 self._send(HTTPStatus.BAD_REQUEST, b'{"error":"bad json"}',
                            "application/json")
                 return
+            if path in ("/note/edit", "/note/delete"):
+                try:
+                    i = int(payload["i"])
+                    res = (state.edit_note(i, str(payload.get("comment", "")))
+                           if path == "/note/edit" else state.delete_note(i))
+                except (KeyError, ValueError, AssertionError) as e:
+                    self._send(HTTPStatus.BAD_REQUEST,
+                               json.dumps({"error": str(e)}).encode(), "application/json")
+                    return
+                print(f"  note #{i} " + ("edited" if path == "/note/edit" else "deleted")
+                      + (f" (F{res['reopened_flag']} reopened)" if res.get("reopened_flag") else ""))
+                self._send(HTTPStatus.OK, json.dumps({"ok": True, **({"note": res} if path == "/note/edit" else res)},
+                                                     ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
+            if path == "/flag":
+                try:
+                    fid = int(payload["id"])
+                    v = state.set_verdict(fid, payload.get("verdict"))
+                except (KeyError, ValueError, AssertionError) as e:
+                    self._send(HTTPStatus.BAD_REQUEST,
+                               json.dumps({"error": str(e)}).encode(), "application/json")
+                    return
+                print(f"  flag F{fid}: {v.get('verdict') or 'cleared'}")
+                self._send(HTTPStatus.OK, json.dumps({"ok": True, "id": fid, **v}).encode(),
+                           "application/json")
+                return
+            flag = payload.get("flag")
+            if flag is not None and not any(f["id"] == int(flag) for f in state.flags):
+                flag = None
             note = state.add_note(
                 t=float(payload.get("t", 0.0)),
                 comment=str(payload.get("comment", "")),
                 tool=str(payload.get("tool", "")),
                 strokes=payload.get("strokes"),
                 frame_png_b64=payload.get("frame_png"),
+                flag=int(flag) if flag is not None else None,
             )
             print(f"  note #{note['i']} @ {note['tc']}  {note['comment']!r}"
+                  + (f"  (re F{note['flag']})" if "flag" in note else "")
                   + (f"  [{note['frame']}]" if note["frame"] else ""))
             body = json.dumps({"ok": True, "note": note},
                               ensure_ascii=False).encode("utf-8")
@@ -267,6 +407,8 @@ def main() -> None:
                     help="Review round number (default: auto-increment per video)")
     ap.add_argument("--edit-dir", type=Path, default=None,
                     help="Override the edit/ output dir (default: auto from video path)")
+    ap.add_argument("--flags", type=Path, default=None,
+                    help="Claude's review flags JSON (default: <edit>/review/<stem>_flags.json if present)")
     ap.add_argument("--no-open", action="store_true",
                     help="Do not auto-open the browser")
     args = ap.parse_args()
@@ -283,17 +425,33 @@ def main() -> None:
     fps = probe_fps(video)
     rnd = args.round if args.round is not None else next_round(review_dir, video.stem)
 
-    state = ReviewState(video, edit_dir, rnd, fps)
+    flags_path = args.flags.expanduser().resolve() if args.flags else \
+        review_dir / f"{video.stem}_flags.json"
+    if args.flags and not flags_path.exists():
+        sys.exit(f"flags file not found: {flags_path}")
+    flags = load_flags(flags_path)
+
+    state = ReviewState(video, edit_dir, rnd, fps, flags)
     handler = make_handler(state)
-    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
-    url = f"http://127.0.0.1:{args.port}/"
+    httpd = None
+    for port in range(args.port, args.port + 10):   # another Dailies may hold the port
+        try:
+            httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+            break
+        except OSError:
+            continue
+    if httpd is None:
+        sys.exit(f"ports {args.port}-{args.port + 9} are all in use")
+    url = f"http://127.0.0.1:{port}/"
 
     print(f"Dailies review server  →  {url}")
     print(f"  video : {video.name}  ({fps:g} fps)")
     print(f"  round : r{rnd:02d}")
+    if flags:
+        print(f"  flags : {len(flags)} from {flags_path.name}  ([ / ] jump between them)")
     print(f"  writes: {state.json_path}")
     print(f"          {state.frames_dir}/")
-    print("  keys  : Space play/pause · ←/→ frame · Shift+←/→ 1s · Enter comment")
+    print("  keys  : Space play/pause · ←/→ frame · Shift+←/→ 1s · Enter comment · [ ] flags")
     print("  Ctrl-C to stop (JSON is saved after every note).")
 
     if not args.no_open:

@@ -191,6 +191,12 @@ def extract_segment(
     vf_parts.append(scale)
     if grade_filter:
         vf_parts.append(grade_filter)
+    # Normalize every segment to limited ("tv") range, tagged, AFTER the grade.
+    # Camera footage is often full range (yuvj420p/pc) while generated cards are
+    # untagged limited range; with stream-copy concat an untagged card that
+    # follows footage inherits the "pc" flag and gets range-converted a second
+    # time at the composite — measured: card paper 236 → 219 (0.86x+16).
+    vf_parts.append("scale=out_range=tv")
     vf = ",".join(vf_parts)
 
     # 30ms audio fades at both edges (Rule 3) — prevent pops
@@ -213,7 +219,7 @@ def extract_segment(
         "-vf", vf,
         "-af", af,
         "-c:v", "libx264", "-preset", preset, "-crf", crf,
-        "-pix_fmt", "yuv420p", "-r", OUT_FPS,
+        "-pix_fmt", "yuv420p", "-color_range", "tv", "-r", OUT_FPS,
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
         str(out_path),
@@ -288,7 +294,16 @@ def extract_all_segments(
 
 
 def concat_segments(segment_paths: list[Path], out_path: Path, edit_dir: Path) -> None:
-    """Lossless concat via the concat demuxer. No re-encode."""
+    """Concat via the concat demuxer: video stream-copied (lossless), audio
+    re-encoded once.
+
+    Stream-copying the audio too kept every segment's AAC encoder priming
+    (~1024 samples) — the decoded audio ran ~17 ms longer per segment, so over
+    22 segments the voice drifted 0.35 s behind the picture (measured by the
+    position of card silences vs card frames). Decoding lets the demuxer trim
+    the priming, and aresample=async fills the sub-frame gaps where a segment's
+    video (rounded up to whole frames) outlasts its audio — result within one
+    frame of the video timeline everywhere."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     concat_list = edit_dir / "_concat.txt"
     concat_list.write_text("".join(f"file '{p.resolve()}'\n" for p in segment_paths))
@@ -297,7 +312,9 @@ def concat_segments(segment_paths: list[Path], out_path: Path, edit_dir: Path) -
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0",
         "-i", str(concat_list),
-        "-c", "copy",
+        "-c:v", "copy",
+        "-af", "aresample=async=1:first_pts=0",
+        "-c:a", "aac", "-b:a", "256k",
         "-movflags", "+faststart",
         str(out_path),
     ]

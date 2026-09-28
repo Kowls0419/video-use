@@ -7,7 +7,7 @@
 <style>
   :root{
     --bg:#121216; --panel:#1a1a20; --panel2:#22222a; --fg:#ebebeb;
-    --dim:#6e6e78; --accent:#ff8c3c; --line:#2c2c36; --good:#7ac77a;
+    --dim:#6e6e78; --accent:#ff8c3c; --line:#2c2c36; --good:#7ac77a; --flag:#a78bfa;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
@@ -30,6 +30,9 @@
   .track .marks{position:absolute;inset:0;pointer-events:none}
   .track .mk{position:absolute;top:1px;width:2px;height:8px;margin-left:-1px;
     border-radius:1px;background:var(--good)}
+  .track .fl{position:absolute;top:15px;height:6px;min-width:3px;margin-left:-1px;
+    border-radius:2px;background:var(--flag);opacity:.85}
+  .track .fl.done{opacity:.35}
   .track .head{position:absolute;top:4px;width:3px;height:16px;margin-left:-1px;
     border-radius:2px;background:var(--fg)}
   .dur{color:var(--dim);font-variant-numeric:tabular-nums;font-size:12px;
@@ -63,6 +66,33 @@
   .note .c{margin-top:3px;white-space:pre-wrap;word-break:break-word}
   .note img{width:100%;border-radius:5px;margin-top:6px;display:block}
   .empty{color:var(--dim);padding:20px;text-align:center}
+  .right h2 + .flags{border-bottom:1px solid var(--line)}
+  .flags{overflow:auto;padding:8px;display:flex;flex-direction:column;gap:8px;max-height:48%}
+  .flag{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--flag);
+    border-radius:8px;padding:8px;cursor:pointer}
+  .flag:hover{border-color:var(--dim);border-left-color:var(--flag)}
+  .flag.active{box-shadow:0 0 0 1px var(--flag) inset}
+  .flag.ok{border-left-color:var(--good);opacity:.6}
+  .flag.change{border-left-color:var(--accent)}
+  .flag .t{color:var(--flag);font-weight:700;font-variant-numeric:tabular-nums}
+  .flag .ti{font-weight:600;margin-top:2px}
+  .flag .c{margin-top:3px;white-space:pre-wrap;word-break:break-word;color:#c9c9d1}
+  .flag .acts{display:flex;gap:6px;margin-top:7px;align-items:center}
+  .flag .acts button{padding:3px 8px;font-size:12px}
+  .flag .st{margin-left:auto;font-size:12px;color:var(--dim)}
+  .note .re{color:var(--flag);font-size:12px;font-weight:600}
+  .note .hd{display:flex;align-items:center;gap:6px}
+  .note .hd .ed{margin-left:auto;display:flex;gap:4px;opacity:.55}
+  .note:hover .hd .ed{opacity:1}
+  .note .hd .ed button{padding:1px 7px;font-size:11px}
+  .note .hd .ed button.del:hover{border-color:#ff453a;color:#ff453a}
+  .note textarea{width:100%;height:60px;margin-top:5px;font-size:13px}
+  .note .editacts{display:flex;gap:6px;margin-top:5px}
+  .note .editacts button{padding:2px 9px;font-size:12px}
+  .note .edited{color:var(--dim);font-size:11px}
+  .replying{display:none;align-items:center;gap:6px;font-size:12px;color:var(--flag)}
+  .replying.on{display:flex}
+  .replying button{padding:1px 6px;font-size:11px}
 </style>
 </head>
 <body>
@@ -106,14 +136,17 @@
       <button id="undo" title="undo last stroke">⤺ undo</button>
       <button id="clear">✕ clear</button>
     </div>
+    <div class="replying" id="replying">↳ replying to <b id="replyLabel"></b> — this note will be linked to that flag <button id="replyCancel">✕</button></div>
     <div class="composer">
       <textarea id="comment" placeholder="Type a note for this moment…  (Enter = save · Shift+Enter = newline)"></textarea>
       <button class="send" id="send">Save ⏎</button>
     </div>
-    <div class="hint">Space play/pause · ←/→ one frame · Shift+←/→ ±1s · drag the timeline to scrub (green ticks = saved notes) · draw on the frame, then Enter to save the note + annotated image.</div>
+    <div class="hint">Space play/pause · ←/→ one frame · Shift+←/→ ±1s · drag the timeline to scrub (green ticks = saved notes, violet = Claude's flags) · [ / ] previous/next flag · ✎ / 🗑 on a note to edit or delete it · draw on the frame, then Enter to save the note + annotated image.</div>
   </div>
   <div class="right">
-    <h2><span>Notes</span><span id="count">0</span></h2>
+    <h2 id="flagsHead" style="display:none"><span>Claude's flags — check these</span><span id="fcount"></span></h2>
+    <div class="flags" id="flags" style="display:none"></div>
+    <h2><span>Your notes</span><span id="count">0</span></h2>
     <div class="notes" id="notes"><div class="empty">No notes yet.</div></div>
   </div>
 </div>
@@ -128,6 +161,7 @@ const notesEl = document.getElementById('notes');
 const countEl = document.getElementById('count');
 
 let fps = (CONFIG && CONFIG.fps) || 24;
+const FLAGS = (CONFIG && CONFIG.flags) || [];   // Claude's review flags (optional)
 let tool = 'pen';
 let color = '#ff3b30';
 let strokes = [];         // committed strokes for the pending note
@@ -175,6 +209,13 @@ let noteTimes=[];
 function drawMarks(){
   const d=v.duration||0; if(!d) return;
   marksEl.innerHTML='';
+  FLAGS.forEach(f=>{
+    const el=document.createElement('div'); el.className='fl'+(f.verdict?' done':'');
+    el.style.left=(Math.max(0,Math.min(1,f.t/d))*100)+'%';
+    if(f.end) el.style.width=(Math.max(0,(f.end-f.t)/d)*100)+'%';
+    el.title='F'+f.id+' '+f.title;
+    marksEl.appendChild(el);
+  });
   noteTimes.forEach(t=>{
     const el=document.createElement('div'); el.className='mk';
     el.style.left=(Math.max(0,Math.min(1,t/d))*100)+'%';
@@ -239,6 +280,13 @@ function drawStroke(c,s,W,H){
 }
 function redraw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
+  const af=activeFlag();
+  if(af && af.region){               // guide only — never baked into a saved frame
+    const [x0,y0,x1,y1]=af.region, W=canvas.width, H=canvas.height;
+    ctx.save(); ctx.setLineDash([8,6]); ctx.strokeStyle='#a78bfa';
+    ctx.lineWidth=Math.max(2,Math.round(W*0.003));
+    ctx.strokeRect(x0*W,y0*H,(x1-x0)*W,(y1-y0)*H); ctx.restore();
+  }
   const all = drawing?strokes.concat([drawing]):strokes;
   all.forEach(s=>drawStroke(ctx,s,canvas.width,canvas.height));
 }
@@ -284,32 +332,158 @@ async function save(){
     tool: strokes.length?strokes[strokes.length-1].tool:'',
     strokes,
     frame_png: flatten(),
+    flag: replyTo,
   };
   const res=await fetch('/note',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(payload)});
   const data=await res.json();
-  if(data.ok){ addNoteCard(data.note); commentEl.value=''; strokes=[]; drawing=null; redraw(); commentEl.blur(); }
+  if(data.ok){
+    addNoteCard(data.note); commentEl.value=''; strokes=[]; drawing=null;
+    if(data.note.flag!=null){ const f=FLAGS.find(x=>x.id===data.note.flag); if(f) f.note_i=data.note.i; setVerdictLocal(data.note.flag,'change'); }
+    setReply(null); redraw(); commentEl.blur();
+  }
 }
 document.getElementById('send').onclick=save;
 
+const NOTES=[];   // {note, el}
+function syncNotes(){
+  countEl.textContent = NOTES.length;
+  noteTimes = NOTES.map(x=>x.note.t); drawMarks();
+  if(!NOTES.length && !notesEl.querySelector('.empty'))
+    notesEl.innerHTML='<div class="empty">No notes yet.</div>';
+}
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json(); if(!d.ok) alert('Dailies: '+(d.error||'request failed')); return d;
+}
+function renderNote(rec){
+  const n=rec.note, el=rec.el;
+  el.innerHTML=`<div class="hd"><span class="t">#${n.i} · ${n.tc}</span>`+
+    `<span class="ed"><button class="edit" title="edit text">✎</button><button class="del" title="delete note">🗑</button></span></div>`+
+    (n.flag!=null?`<div class="re">re F${n.flag}</div>`:'')+
+    `<div class="c"></div>`+(n.edited?`<div class="edited">edited</div>`:'')+
+    (n.frame?`<img src="/${n.frame}">`:'');
+  el.querySelector('.c').textContent=n.comment||'';
+  el.querySelector('.edit').onclick=e=>{ e.stopPropagation(); startEdit(rec); };
+  el.querySelector('.del').onclick=async e=>{
+    e.stopPropagation();
+    if(!confirm(`Delete note #${n.i}${n.frame?' and its drawing':''}?`)) return;
+    const d=await post('/note/delete',{i:n.i}); if(!d.ok) return;
+    el.remove(); NOTES.splice(NOTES.indexOf(rec),1);
+    if(d.reopened_flag!=null) setVerdictLocal(d.reopened_flag,null);
+    syncNotes();
+  };
+}
+function startEdit(rec){
+  const n=rec.note, el=rec.el, c=el.querySelector('.c');
+  if(el.querySelector('textarea')) return;
+  const ta=document.createElement('textarea'); ta.value=n.comment||'';
+  const acts=document.createElement('div'); acts.className='editacts';
+  acts.innerHTML='<button class="sv on">Save ⏎</button><button class="cx">Cancel (Esc)</button>';
+  c.replaceWith(ta); ta.after(acts);
+  ta.onclick=e=>e.stopPropagation(); acts.onclick=e=>e.stopPropagation();
+  const done=async save=>{
+    if(save){ const d=await post('/note/edit',{i:n.i,comment:ta.value}); if(d.ok) rec.note=d.note; }
+    renderNote(rec);
+  };
+  acts.querySelector('.sv').onclick=()=>done(true);
+  acts.querySelector('.cx').onclick=()=>done(false);
+  ta.onkeydown=e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); done(true); }
+    else if(e.key==='Escape'){ e.preventDefault(); done(false); }
+    e.stopPropagation();
+  };
+  ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length);
+}
 function addNoteCard(n){
   const empty=notesEl.querySelector('.empty'); if(empty) empty.remove();
   const el=document.createElement('div'); el.className='note';
-  el.onclick=()=>{ v.pause(); v.currentTime=n.t; };
-  el.innerHTML=`<div class="t">#${n.i} · ${n.tc}</div>`+
-    (n.comment?`<div class="c"></div>`:'')+
-    (n.frame?`<img src="/${n.frame}?_=${Date.now()}">`:'');
-  if(n.comment) el.querySelector('.c').textContent=n.comment;
+  const rec={note:n,el};
+  el.onclick=()=>{ v.pause(); v.currentTime=rec.note.t; };
+  renderNote(rec); NOTES.push(rec);
   notesEl.appendChild(el);
-  countEl.textContent = notesEl.querySelectorAll('.note').length;
   notesEl.scrollTop = notesEl.scrollHeight;
-  noteTimes.push(n.t); drawMarks();
+  syncNotes();
 }
 if(CONFIG && CONFIG.existing) CONFIG.existing.forEach(addNoteCard);
 
+// ---- Claude's flags ----
+const flagsEl=document.getElementById('flags');
+let replyTo=null;
+function flagEnd(f){ return f.end!=null ? f.end : f.t; }
+function activeFlag(){
+  const t=v.currentTime||0;
+  return FLAGS.find(f=>t>=f.t-0.5 && t<=flagEnd(f)+0.5) || null;
+}
+function setReply(id){
+  replyTo=id;
+  document.getElementById('replying').classList.toggle('on',id!=null);
+  document.getElementById('replyLabel').textContent = id!=null ? 'F'+id : '';
+}
+document.getElementById('replyCancel').onclick=()=>setReply(null);
+function seekFlag(f){ v.pause(); v.currentTime=f.t; updTC(); redraw(); highlightFlags(); }
+let stopAt=null;
+function playFlag(f){ stopAt=flagEnd(f)+1.5; v.currentTime=Math.max(0,f.t-1.5); v.play(); }
+v.addEventListener('timeupdate',()=>{ if(stopAt!=null && v.currentTime>=stopAt){ v.pause(); stopAt=null; } });
+function renderFlagCard(f){
+  const el=f._el; el.className='flag'+(f.verdict?' '+f.verdict:'');
+  el.innerHTML=`<div class="t">F${f.id} · ${f.tc}${f.end!=null?' – '+tc(f.end):''}</div>`+
+    `<div class="ti"></div><div class="c"></div>`+
+    `<div class="acts"><button data-a="play">▶ play</button><button data-a="ok">✓ OK</button>`+
+    `<button data-a="change">✎ Change</button><span class="st"></span></div>`;
+  el.querySelector('.ti').textContent=f.title;
+  el.querySelector('.c').textContent=f.note;
+  el.querySelector('.st').textContent = f.verdict==='ok'?'OK':f.verdict==='change'?('change'+(f.note_i?' → note #'+f.note_i:'')):'';
+  el.querySelector('[data-a=play]').onclick=e=>{e.stopPropagation(); playFlag(f);};
+  el.querySelector('[data-a=ok]').onclick=async e=>{
+    e.stopPropagation();
+    const nv = f.verdict==='ok' ? null : 'ok';           // click again to undo
+    const r=await fetch('/flag',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:f.id,verdict:nv})});
+    if((await r.json()).ok) setVerdictLocal(f.id,nv);
+  };
+  el.querySelector('[data-a=change]').onclick=e=>{
+    e.stopPropagation(); seekFlag(f); setReply(f.id); commentEl.focus();
+  };
+}
+function setVerdictLocal(id,verdict){
+  const f=FLAGS.find(x=>x.id===id); if(!f) return;
+  f.verdict=verdict; if(verdict!=='change') delete f.note_i;
+  renderFlagCard(f); countFlags(); drawMarks();
+}
+function countFlags(){
+  document.getElementById('fcount').textContent =
+    FLAGS.filter(f=>f.verdict).length+' / '+FLAGS.length+' answered';
+}
+function highlightFlags(){
+  const af=activeFlag();
+  FLAGS.forEach(f=>f._el.classList.toggle('active',f===af));
+}
+if(FLAGS.length){
+  document.getElementById('flagsHead').style.display='';
+  flagsEl.style.display='';
+  FLAGS.forEach(f=>{
+    f._el=document.createElement('div');
+    f._el.onclick=()=>seekFlag(f);
+    renderFlagCard(f); flagsEl.appendChild(f._el);
+  });
+  countFlags();
+  v.addEventListener('timeupdate',()=>{ highlightFlags(); if(!drawing) redraw(); });
+  v.addEventListener('seeked',()=>{ highlightFlags(); redraw(); });
+}
+function jumpFlag(dir){
+  if(!FLAGS.length) return;
+  const t=v.currentTime||0, eps=0.05;
+  const f = dir>0 ? (FLAGS.find(x=>x.t>t+eps) || FLAGS[0])
+                  : ([...FLAGS].reverse().find(x=>x.t<t-eps) || FLAGS[FLAGS.length-1]);
+  seekFlag(f); f._el.scrollIntoView({block:'nearest'});
+}
+
 // ---- keyboard ----
 window.addEventListener('keydown',e=>{
-  const typing = document.activeElement===commentEl;
+  const ae=document.activeElement;
+  if(ae && ae!==commentEl && (ae.tagName==='TEXTAREA'||ae.tagName==='INPUT')) return;  // inline edit
+  const typing = ae===commentEl;
   if(typing){
     if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); save(); }
     return; // let all other keys type normally
@@ -319,6 +493,8 @@ window.addEventListener('keydown',e=>{
   else if(e.key==='ArrowRight'){ e.preventDefault(); step(e.shiftKey?Math.round(fps):1); }
   else if(e.key==='Enter'){ e.preventDefault(); commentEl.focus(); }
   else if(e.key==='Backspace'){ e.preventDefault(); strokes.pop(); redraw(); }
+  else if(e.key===']'){ e.preventDefault(); jumpFlag(1); }
+  else if(e.key==='['){ e.preventDefault(); jumpFlag(-1); }
 });
 </script>
 </body>
